@@ -124,10 +124,7 @@ function setup() {
     debt.getRange(2, 1, 1, 9).setValues([['NO01', 'Vay mua xe (VÍ DỤ – xoá dòng này)', 'Ngân hàng ABC',
       'Vay trả góp', 60000000, 5500000, EXAMPLE_DUE_DAY, start, 9.5]]);
     debt.getRange('P2').setValue('tra gop xe, no01');
-    // Công thức đặt ở dòng tiêu đề để không mất khi xoá/thêm dòng
-    const P = `'${SH.PAYMENTS}'`;
-    debt.getRange('J1').setFormula(`={"Đã trả"; ARRAYFORMULA(IF(A2:A="",, SUMIF(${P}!B2:B, A2:A, ${P}!C2:C)))}`);
-    debt.getRange('K1').setFormula('={"Còn lại"; ARRAYFORMULA(IF(A2:A="",, IF(E2:E="",, IF(E2:E-J2:J<0, 0, E2:E-J2:J))))}');
+    // Cột J (Đã trả) và K (Còn lại) do script tự tính trong updateDebts()
     header_(debt, DEBT_HEADERS.length);
     debt.getRange('D2:D').setDataValidation(list(['Vay trả góp', 'Thẻ tín dụng', 'Vay cá nhân', 'Mua trả góp', 'Định kỳ (không có tổng)', 'Khác']));
     debt.getRange('G2:G').setDataValidation(SpreadsheetApp.newDataValidation().requireNumberBetween(1, 31).setAllowInvalid(false)
@@ -233,7 +230,7 @@ function updateDebts() {
 
   rows.forEach(r => {
     const id = String(r[0]).trim();
-    if (!id) { out.push(['', '', '', '']); return; }
+    if (!id) { out.push(['', '', '', '', '', '']); return; }
     const total = Number(r[4]) || 0;
     const inst = Number(r[5]) || 0;
     const dueDay = Math.min(Number(r[6]) || 0, 31);
@@ -258,11 +255,12 @@ function updateDebts() {
       while (d.overdue < 240 && nthDueDate_(start, dueDay, k) < today) { d.overdue++; k++; }
       d.status = d.daysLeft < 0 ? 'Quá hạn' : d.daysLeft <= maxRemind ? 'Sắp tới hạn' : 'Đang trả';
     }
-    out.push([d.nextDue || '', d.daysLeft === null ? '' : d.daysLeft, d.payoff || '', d.status]);
+    out.push([d.paid, d.remain === null ? '' : d.remain, d.nextDue || '', d.daysLeft === null ? '' : d.daysLeft, d.payoff || '', d.status]);
     debts.push(d);
   });
 
-  sh.getRange(2, 12, n, 4).setValues(out);
+  sh.getRange(1, 10, 1, 2).setValues([['Đã trả', 'Còn lại']]); // thay công thức cũ (nếu có) bằng chữ
+  sh.getRange(2, 10, n, 6).setValues(out);
   return debts;
 }
 
