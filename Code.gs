@@ -49,7 +49,7 @@ function onOpen() {
 // Tự cập nhật khi sửa khoản nợ hoặc thêm lịch sử trả nợ
 function onEdit(e) {
   const name = e.range.getSheet().getName();
-  if (name === SH.PAYMENTS || (name === SH.DEBTS && e.range.getColumn() <= 9)) {
+  if (name === SH.PAYMENTS || name === SH.TX || name === SH.CATS || (name === SH.DEBTS && e.range.getColumn() <= 9)) {
     try { updateDebts(); } catch (err) { /* bỏ qua */ }
   }
 }
@@ -99,9 +99,7 @@ function setup() {
       ['Thu khác', 'Thu', '', ''],
     ];
     cat.getRange(1, 1, cats.length, 4).setValues(cats);
-    const T = `'${SH.TX}'`;
-    cat.getRange('E1').setFormula(`={"Đã chi/thu tháng này"; MAP(A2:A, LAMBDA(c, IF(c="",, SUMIFS(${T}!D:D, ${T}!C:C, c, ${T}!A:A, ">="&(EOMONTH(TODAY(),-1)+1), ${T}!A:A, "<"&(EOMONTH(TODAY(),0)+1)))))}`);
-    cat.getRange('F1').setFormula('={"% ngân sách"; ARRAYFORMULA(IF(C2:C="",, IF(C2:C=0,, E2:E/C2:C)))}');
+    cat.getRange('E1:F1').setValues([['Đã chi/thu tháng này', '% ngân sách']]); // E, F do script tự tính
     header_(cat, 6);
     cat.getRange('B2:B').setDataValidation(list(['Chi', 'Thu']));
     cat.getRange('C2:C').setNumberFormat('#,##0');
@@ -174,23 +172,13 @@ function setup() {
   // ---- Tổng quan
   const dash = sheet_(SH.DASH);
   if (dash.getLastRow() === 0) {
-    const T = `'${SH.TX}'`, D = `'${SH.DEBTS}'`;
-    const m0 = 'EOMONTH(TODAY(),-1)+1', m1 = 'EOMONTH(TODAY(),0)+1';
     dash.getRange('A1').setValue('TỔNG QUAN TÀI CHÍNH').setFontSize(16).setFontWeight('bold');
-    dash.getRange(3, 1, 7, 2).setValues([
-      ['Tổng nợ còn lại', `=SUM(${D}!K2:K)`],
-      ['Phải trả nợ mỗi tháng', `=SUMIFS(${D}!F2:F, ${D}!A2:A, "<>", ${D}!O2:O, "<>Đã tất toán")`],
-      ['Khoản nợ quá hạn', `=COUNTIF(${D}!O2:O, "Quá hạn")`],
-      ['Khoản nợ sắp tới hạn', `=COUNTIF(${D}!O2:O, "Sắp tới hạn")`],
-      ['Thu tháng này', `=SUMIFS(${T}!D:D, ${T}!B:B, "Thu", ${T}!A:A, ">="&(${m0}), ${T}!A:A, "<"&(${m1}))`],
-      ['Chi tháng này', `=SUMIFS(${T}!D:D, ${T}!B:B, "Chi", ${T}!A:A, ">="&(${m0}), ${T}!A:A, "<"&(${m1}))`],
-      ['Còn lại tháng này', '=B7-B8'],
-    ]);
+    dash.getRange(3, 1, 7, 1).setValues([['Tổng nợ còn lại'], ['Phải trả nợ mỗi tháng'], ['Khoản nợ quá hạn'],
+      ['Khoản nợ sắp tới hạn'], ['Thu tháng này'], ['Chi tháng này'], ['Còn lại tháng này']]); // số liệu do script tự tính
     dash.getRange('A3:A9').setFontWeight('bold');
     dash.getRange('B3:B9').setNumberFormat('#,##0');
     dash.getRange('B5:B6').setNumberFormat('0');
     dash.getRange('A11').setValue('Lịch trả nợ sắp tới').setFontWeight('bold').setFontSize(13);
-    dash.getRange('A12').setFormula(`=QUERY(${D}!A1:O, "select A, B, F, L, M, O where A is not null and O <> 'Đã tất toán' order by L asc", 1)`);
     dash.getRange('C13:C').setNumberFormat('#,##0');
     dash.getRange('D13:D').setNumberFormat('dd/mm/yyyy');
     dash.setColumnWidth(1, 200).setColumnWidth(2, 240).setColumnWidths(3, 4, 140);
@@ -219,7 +207,7 @@ function setup() {
  */
 function updateDebts() {
   const sh = SpreadsheetApp.getActive().getSheetByName(SH.DEBTS);
-  if (!sh || sh.getLastRow() < 2) return [];
+  if (!sh || sh.getLastRow() < 2) { refreshReports_([]); return []; }
   const remind = parseDays_(getSettings_()['Nhắc trước (ngày)']);
   const maxRemind = remind.length ? Math.max(...remind) : 3;
   const paidMap = paymentsById_();
@@ -261,7 +249,46 @@ function updateDebts() {
 
   sh.getRange(1, 10, 1, 2).setValues([['Đã trả', 'Còn lại']]); // thay công thức cũ (nếu có) bằng chữ
   sh.getRange(2, 10, n, 6).setValues(out);
+  refreshReports_(debts);
   return debts;
+}
+
+// Điền số liệu cho sheet "Tổng quan" và "Danh mục" bằng script (không dùng công thức,
+// vì công thức dễ lỗi #ERROR! khi bảng tính đặt ngôn ngữ/vùng không phải US)
+function refreshReports_(debts) {
+  const ss = SpreadsheetApp.getActive();
+  const now = new Date();
+  const t = sumTx_(new Date(now.getFullYear(), now.getMonth(), 1), new Date(now.getFullYear(), now.getMonth() + 1, 1));
+
+  const dash = ss.getSheetByName(SH.DASH);
+  if (dash) {
+    const open = debts.filter(d => d.status !== 'Đã tất toán');
+    dash.getRange('B3:B9').setValues([
+      [debts.reduce((sum, d) => sum + (d.remain || 0), 0)],
+      [open.reduce((sum, d) => sum + d.inst, 0)],
+      [debts.filter(d => d.status === 'Quá hạn').length],
+      [debts.filter(d => d.status === 'Sắp tới hạn').length],
+      [t.thu], [t.chi], [t.thu - t.chi],
+    ]);
+    dash.getRange('A12:F60').clearContent();
+    const upcoming = open.filter(d => d.nextDue).sort((a, b) => a.nextDue - b.nextDue)
+      .map(d => [d.id, d.name, d.inst, d.nextDue, d.daysLeft, d.status]);
+    dash.getRange(12, 1, 1, 6).setValues([['Mã', 'Tên khoản nợ', 'Trả mỗi kỳ', 'Kỳ tới hạn', 'Còn (ngày)', 'Trạng thái']])
+      .setFontWeight('bold').setBackground('#1f4e78').setFontColor('#ffffff');
+    if (upcoming.length) dash.getRange(13, 1, upcoming.length, 6).setValues(upcoming);
+  }
+
+  const cat = ss.getSheetByName(SH.CATS);
+  if (cat && cat.getLastRow() > 1) {
+    const n = cat.getLastRow() - 1;
+    const rows = cat.getRange(2, 1, n, 3).getValues();
+    cat.getRange(1, 5, 1, 2).setValues([['Đã chi/thu tháng này', '% ngân sách']]);
+    cat.getRange(2, 5, n, 2).setValues(rows.map(([name, , budget]) => {
+      if (!name) return ['', ''];
+      const used = t.all[name] || 0;
+      return [used, Number(budget) > 0 ? used / Number(budget) : ''];
+    }));
+  }
 }
 
 // Ngày tới hạn thứ n (n = 1 là kỳ đầu tiên kể từ ngày bắt đầu)
@@ -379,11 +406,12 @@ function budgetAlerts_(threshold) {
 // Tổng thu/chi trong khoảng [from, to)
 function sumTx_(from, to) {
   const sh = SpreadsheetApp.getActive().getSheetByName(SH.TX);
-  const res = { thu: 0, chi: 0, byCat: {} };
+  const res = { thu: 0, chi: 0, byCat: {}, all: {} };
   if (!sh || sh.getLastRow() < 2) return res;
   sh.getRange(2, 1, sh.getLastRow() - 1, 4).getValues().forEach(([date, type, cat, amt]) => {
     if (!(date instanceof Date) || date < from || date >= to) return;
     amt = Number(amt) || 0;
+    if (cat) res.all[cat] = (res.all[cat] || 0) + amt;
     if (type === 'Thu') res.thu += amt;
     else if (type === 'Chi') {
       res.chi += amt;
@@ -542,8 +570,8 @@ function recordBankTx_(tx) {
     safe_('Ngân hàng' + (tx.bank ? ' ' + tx.bank : '')), tx.ref]);
   if (debtId) {
     ss.getSheetByName(SH.PAYMENTS).appendRow([tx.date, debtId, tx.amount, 'Ngân hàng (tự động)', tx.ref, safe_(tx.desc)]);
-    updateDebts();
   }
+  updateDebts(); // cập nhật nợ + tổng quan + danh mục
   return true;
 }
 
