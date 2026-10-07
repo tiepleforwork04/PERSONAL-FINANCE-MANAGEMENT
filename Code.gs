@@ -22,6 +22,7 @@ const SH = {
   TX: 'Thu chi',
   CATS: 'Danh mục',
   SETTINGS: 'Cài đặt',
+  MONTH: 'Báo cáo tháng',
 };
 const EXAMPLE_DUE_DAY = 28;
 const PAY_TOLERANCE = 0.02; // trả thiếu dưới 2% của 1 kỳ (làm tròn, phí lẻ) vẫn tính là đã trả đủ kỳ đó
@@ -40,6 +41,7 @@ function onOpen() {
     .addItem('2. Bật nhắc tự động hằng ngày', 'installTriggers')
     .addSeparator()
     .addItem('Cập nhật trạng thái nợ', 'updateDebts')
+    .addItem('Làm mới báo cáo tháng', 'refreshMonthReport_')
     .addItem('Gửi email thử ngay', 'sendTestEmail')
     .addItem('Xem link webhook ngân hàng', 'showWebhookUrl')
     .addItem('Thử nhận 1 giao dịch ngân hàng mẫu', 'testBankTx')
@@ -51,6 +53,10 @@ function onOpen() {
 // Tự cập nhật khi sửa khoản nợ hoặc thêm lịch sử trả nợ
 function onEdit(e) {
   const name = e.range.getSheet().getName();
+  if (name === SH.MONTH) {
+    if (e.range.getA1Notation() === 'B2') { try { refreshMonthReport_(); } catch (err) { /* bỏ qua */ } }
+    return;
+  }
   if (name === SH.PAYMENTS || name === SH.TX || name === SH.CATS || (name === SH.DEBTS && e.range.getColumn() <= 9)) {
     try { updateDebts(); } catch (err) { /* bỏ qua */ }
   }
@@ -186,8 +192,10 @@ function setup() {
     dash.setColumnWidth(1, 200).setColumnWidth(2, 240).setColumnWidths(3, 4, 140);
   }
 
+  setupMonthSheet_();
+
   // Sắp xếp sheet, xoá sheet trống mặc định
-  [SH.DASH, SH.DEBTS, SH.PAYMENTS, SH.TX, SH.CATS, SH.SETTINGS].forEach((n, i) => {
+  [SH.DASH, SH.MONTH, SH.DEBTS, SH.PAYMENTS, SH.TX, SH.CATS, SH.SETTINGS].forEach((n, i) => {
     ss.setActiveSheet(ss.getSheetByName(n));
     ss.moveActiveSheet(i + 1);
   });
@@ -291,6 +299,8 @@ function refreshReports_(debts) {
       return [used, Number(budget) > 0 ? used / Number(budget) : ''];
     }));
   }
+
+  try { refreshMonthReport_(); } catch (err) { /* bỏ qua */ }
 }
 
 // Ngày tới hạn thứ n (n = 1 là kỳ đầu tiên kể từ ngày bắt đầu)
@@ -622,6 +632,140 @@ function showWebhookUrl() {
   try { url = ScriptApp.getService().getUrl(); } catch (err) { /* chưa triển khai */ }
   if (!url) return ui.alert('Chưa triển khai Web App.\n\nVào Apps Script → Triển khai → Triển khai mới → Ứng dụng web\n(Thực thi với tư cách: Tôi · Ai có quyền truy cập: Bất kỳ ai), rồi chạy lại mục này.');
   ui.alert('Link webhook', `${url}?token=${getSettings_()['Webhook token']}\n\nDán link này vào phần cấu hình Webhook của SePay / Casso. Không chia sẻ cho người khác.`, ui.ButtonSet.OK);
+}
+
+/* ======================= BÁO CÁO THEO THÁNG ======================= */
+
+// Sheet "Báo cáo tháng": chọn tháng ở ô B2 → số liệu + biểu đồ tự cập nhật.
+// Dữ liệu lấy từ sheet "Thu chi" (chỉ cần nhập hằng ngày ở đó).
+function setupMonthSheet_() {
+  const sh = sheet_(SH.MONTH);
+  if (sh.getLastRow() === 0) {
+    sh.getRange('A1').setValue('BÁO CÁO THU CHI THEO THÁNG').setFontSize(16).setFontWeight('bold');
+    sh.getRange('A2').setValue('Chọn tháng').setFontWeight('bold');
+    sh.getRange('B2').setNumberFormat('@').setValue(Utilities.formatDate(new Date(), TZ, 'yyyy-MM'))
+      .setBackground('#fff2cc').setFontWeight('bold').setHorizontalAlignment('center');
+    sh.getRange('C2').setValue('← chọn tháng muốn xem (dạng yyyy-mm)').setFontColor('#666666');
+    sh.setColumnWidth(1, 190).setColumnWidths(2, 3, 120);
+    sh.getRange('T3:Z3').setFontWeight('bold');
+    sh.getRange('T1').setValue('Dữ liệu cho biểu đồ (tự tính, không cần sửa)').setFontColor('#999999');
+  }
+  const opts = [];
+  const now = new Date();
+  for (let i = -24; i <= 1; i++) opts.push(Utilities.formatDate(new Date(now.getFullYear(), now.getMonth() + i, 1), TZ, 'yyyy-MM'));
+  sh.getRange('B2').setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(opts, true).setAllowInvalid(true).build());
+  refreshMonthReport_();
+}
+
+function parseMonth_(v) {
+  if (v instanceof Date) return new Date(v.getFullYear(), v.getMonth(), 1);
+  const s = String(v || '').trim();
+  let m = s.match(/^(\d{4})[-\/](\d{1,2})$/);
+  if (m) return new Date(+m[1], +m[2] - 1, 1);
+  m = s.match(/^(\d{1,2})[-\/](\d{4})$/);
+  if (m) return new Date(+m[2], +m[1] - 1, 1);
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), 1);
+}
+
+function refreshMonthReport_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(SH.MONTH);
+  if (!sh) return;
+  const ym = d => d.getFullYear() * 12 + d.getMonth();
+  const month = parseMonth_(sh.getRange('B2').getValue());
+  const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const label = d => Utilities.formatDate(d, TZ, 'MM/yyyy');
+  const first = new Date(month.getFullYear(), month.getMonth() - 5, 1); // 6 tháng kết thúc ở tháng chọn
+
+  // Một lượt đọc sheet Thu chi
+  const dayChi = new Array(days).fill(0), dayThu = new Array(days).fill(0);
+  const trend = [0, 1, 2, 3, 4, 5].map(i => ({ d: new Date(first.getFullYear(), first.getMonth() + i, 1), thu: 0, chi: 0 }));
+  const byCat = {};
+  let count = 0;
+  const tx = ss.getSheetByName(SH.TX);
+  if (tx && tx.getLastRow() > 1) {
+    tx.getRange(2, 1, tx.getLastRow() - 1, 4).getValues().forEach(([date, type, cat, amt]) => {
+      if (!(date instanceof Date)) return;
+      amt = Number(amt) || 0;
+      const t = trend[ym(date) - ym(first)];
+      if (!t || (type !== 'Thu' && type !== 'Chi')) return;
+      if (type === 'Thu') t.thu += amt; else t.chi += amt;
+      if (ym(date) !== ym(month)) return;
+      count++;
+      if (type === 'Thu') dayThu[date.getDate() - 1] += amt;
+      else { dayChi[date.getDate() - 1] += amt; const c = cat || 'Chưa phân loại'; byCat[c] = (byCat[c] || 0) + amt; }
+    });
+  }
+  const cur = trend[5], prev = trend[4];
+  const isNow = ym(month) === ym(new Date());
+  const elapsed = isNow ? new Date().getDate() : days; // tháng đang chạy: chia theo số ngày đã qua
+
+  // KPI
+  sh.getRange('A4:B9').setValues([
+    ['Tổng thu', cur.thu],
+    ['Tổng chi', cur.chi],
+    ['Còn lại (thu − chi)', cur.thu - cur.chi],
+    ['Tỷ lệ tiết kiệm', cur.thu > 0 ? (cur.thu - cur.chi) / cur.thu : ''],
+    ['Chi trung bình / ngày', cur.chi / elapsed],
+    ['Chi so với tháng trước', prev.chi > 0 ? (cur.chi - prev.chi) / prev.chi : ''],
+  ]);
+  sh.getRange('A4:A9').setFontWeight('bold');
+  sh.getRange('B4:B9').setNumberFormat('#,##0');
+  sh.getRange('B7').setNumberFormat('0%');
+  sh.getRange('B9').setNumberFormat('+0%;-0%;0%');
+  sh.getRange('C9').setValue(prev.chi > 0 ? '(tháng trước: ' + money_(prev.chi) + ')' : '').setFontColor('#666666');
+  sh.getRange('C4').setValue(count + ' giao dịch').setFontColor('#666666');
+
+  // Bảng danh mục (sắp xếp chi nhiều → ít)
+  const budgets = {};
+  const cat = ss.getSheetByName(SH.CATS);
+  if (cat && cat.getLastRow() > 1) cat.getRange(2, 1, cat.getLastRow() - 1, 3).getValues().forEach(([n, , b]) => { if (n) budgets[n] = Number(b) || 0; });
+  const catRows = Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a])
+    .map(n => [n, byCat[n], budgets[n] || '', budgets[n] > 0 ? byCat[n] / budgets[n] : '']);
+  sh.getRange('A11:D60').clearContent().clearFormat();
+  sh.getRange('A11').setValue('Chi theo danh mục').setFontWeight('bold').setFontSize(13);
+  sh.getRange('A12:D12').setValues([['Danh mục', 'Đã chi', 'Ngân sách', '% ngân sách']])
+    .setFontWeight('bold').setBackground('#1f4e78').setFontColor('#ffffff');
+  if (catRows.length) {
+    sh.getRange(13, 1, catRows.length, 4).setValues(catRows);
+    sh.getRange(13, 2, catRows.length, 2).setNumberFormat('#,##0');
+    sh.getRange(13, 4, catRows.length, 1).setNumberFormat('0%');
+    const pct = sh.getRange(13, 4, catRows.length, 1);
+    sh.setConditionalFormatRules([
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThanOrEqualTo(1).setBackground('#f8d7da').setFontColor('#842029').setRanges([pct]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThanOrEqualTo(0.8).setBackground('#fff3cd').setRanges([pct]).build(),
+    ]);
+  } else {
+    sh.getRange('A13').setValue('Chưa có khoản chi nào trong tháng này').setFontColor('#666666');
+  }
+
+  // Dữ liệu cho biểu đồ (cột T:V theo ngày, X:Z theo tháng)
+  sh.getRange('T3:Z40').clearContent();
+  sh.getRange('T3:V3').setValues([['Ngày', 'Chi', 'Thu']]);
+  sh.getRange(4, 20, days, 3).setValues(dayChi.map((c, i) => ['' + (i + 1), c, dayThu[i]]));
+  sh.getRange('X3:Z3').setValues([['Tháng', 'Thu', 'Chi']]);
+  sh.getRange(4, 24, 6, 3).setValues(trend.map(t => [label(t.d), t.thu, t.chi]));
+
+  // Biểu đồ (dựng lại mỗi lần cho khớp số ngày/danh mục)
+  sh.getCharts().forEach(c => sh.removeChart(c));
+  if (catRows.length) {
+    sh.insertChart(sh.newChart().setChartType(Charts.ChartType.PIE)
+      .addRange(sh.getRange(12, 1, catRows.length + 1, 2)).setNumHeaders(1)
+      .setOption('title', 'Cơ cấu chi tháng ' + label(month)).setOption('pieHole', 0.4)
+      .setOption('width', 480).setOption('height', 300).setPosition(2, 6, 0, 0).build());
+  }
+  sh.insertChart(sh.newChart().setChartType(Charts.ChartType.COLUMN)
+    .addRange(sh.getRange(3, 24, 7, 3)).setNumHeaders(1)
+    .setOption('title', 'Thu / chi 6 tháng gần nhất')
+    .setOption('colors', ['#2e8b57', '#d9534f'])
+    .setOption('width', 480).setOption('height', 300).setPosition(2, 12, 0, 0).build());
+  sh.insertChart(sh.newChart().setChartType(Charts.ChartType.COLUMN)
+    .addRange(sh.getRange(3, 20, days + 1, 2)).setNumHeaders(1)
+    .setOption('title', 'Chi theo ngày – tháng ' + label(month))
+    .setOption('legend', { position: 'none' }).setOption('colors', ['#d9534f'])
+    .setOption('width', 960).setOption('height', 300).setPosition(18, 6, 0, 0).build());
 }
 
 /* ======================= TIỆN ÍCH ======================= */
