@@ -24,7 +24,8 @@ const SH = {
   SETTINGS: 'Cài đặt',
 };
 const EXAMPLE_DUE_DAY = 28;
-const PAY_TOLERANCE = 0.01; // trả thiếu dưới 1% của 1 kỳ (làm tròn, phí lẻ) vẫn tính là đã trả đủ kỳ đó
+const PAY_TOLERANCE = 0.02; // trả thiếu dưới 2% của 1 kỳ (làm tròn, phí lẻ) vẫn tính là đã trả đủ kỳ đó
+const PAYOFF_TOLERANCE = 0.05; // ước tính ngày hết nợ: kỳ cuối lệch dưới 5% so với kỳ thường vẫn tính là 1 kỳ
 // Cột A..Q của sheet "Khoản nợ"
 const DEBT_HEADERS = ['Mã', 'Tên khoản nợ', 'Chủ nợ', 'Loại', 'Tổng phải trả', 'Trả mỗi kỳ',
   'Ngày tới hạn (hàng tháng)', 'Ngày bắt đầu', 'Lãi suất %/năm', 'Đã trả', 'Còn lại',
@@ -238,7 +239,7 @@ function updateDebts() {
       d.amountDue = inst - Math.max(paid - paidPeriods * inst, 0);
       if (remain !== null) {
         d.amountDue = Math.min(d.amountDue, remain);
-        d.payoff = nthDueDate_(start, dueDay, paidPeriods + Math.ceil(remain / inst - PAY_TOLERANCE));
+        d.payoff = nthDueDate_(start, dueDay, paidPeriods + Math.ceil(remain / inst - PAYOFF_TOLERANCE));
       }
       let k = paidPeriods + 1;
       while (d.overdue < 240 && nthDueDate_(start, dueDay, k) < today) { d.overdue++; k++; }
