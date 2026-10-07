@@ -24,6 +24,7 @@ const SH = {
   SETTINGS: 'Cài đặt',
 };
 const EXAMPLE_DUE_DAY = 28;
+const PAY_TOLERANCE = 0.01; // trả thiếu dưới 1% của 1 kỳ (làm tròn, phí lẻ) vẫn tính là đã trả đủ kỳ đó
 // Cột A..Q của sheet "Khoản nợ"
 const DEBT_HEADERS = ['Mã', 'Tên khoản nợ', 'Chủ nợ', 'Loại', 'Tổng phải trả', 'Trả mỗi kỳ',
   'Ngày tới hạn (hàng tháng)', 'Ngày bắt đầu', 'Lãi suất %/năm', 'Đã trả', 'Còn lại',
@@ -228,16 +229,16 @@ function updateDebts() {
     const d = { id, name: r[1], creditor: r[2], inst, paid, remain,
       nextDue: null, daysLeft: null, amountDue: 0, payoff: null, overdue: 0, status: '' };
 
-    if (remain === 0) d.status = 'Đã tất toán';
+    if (remain !== null && (remain === 0 || (inst > 0 && remain <= inst * PAY_TOLERANCE))) d.status = 'Đã tất toán';
     else if (!inst || !dueDay) d.status = 'Thiếu thông tin';
     else {
-      const paidPeriods = Math.floor(paid / inst + 1e-9);
+      const paidPeriods = Math.floor(paid / inst + PAY_TOLERANCE);
       d.nextDue = nthDueDate_(start, dueDay, paidPeriods + 1);
       d.daysLeft = Math.round((d.nextDue - today) / 86400000);
-      d.amountDue = inst - (paid - paidPeriods * inst);
+      d.amountDue = inst - Math.max(paid - paidPeriods * inst, 0);
       if (remain !== null) {
         d.amountDue = Math.min(d.amountDue, remain);
-        d.payoff = nthDueDate_(start, dueDay, paidPeriods + Math.ceil(remain / inst - 1e-9));
+        d.payoff = nthDueDate_(start, dueDay, paidPeriods + Math.ceil(remain / inst - PAY_TOLERANCE));
       }
       let k = paidPeriods + 1;
       while (d.overdue < 240 && nthDueDate_(start, dueDay, k) < today) { d.overdue++; k++; }
